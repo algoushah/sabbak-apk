@@ -1,0 +1,86 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "رابط الموقع (https://...)"
+        required: true
+      app_name:
+        description: "اسم التطبيق"
+        required: true
+        default: "My App"
+      icon_url:
+        description: "رابط الأيقونة PNG/JPG (اختياري)"
+        required: false
+        default: ""
+      job_id:
+        description: "معرّف الطلب (يرسله الـ Worker)"
+        required: false
+        default: ""
+
+run-name: "build-${{ inputs.job_id || github.run_id }}"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.5"
+
+      - name: Configure app (url, name, icon)
+        env:
+          APP_URL: ${{ inputs.url }}
+          APP_NAME: ${{ inputs.app_name }}
+          ICON_URL: ${{ inputs.icon_url }}
+        run: python3 scripts/configure.py
+
+      - name: Prepare keystore
+        env:
+          KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KS_SECRET_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            PASS="$KS_SECRET_PASS"
+          else
+            PASS="sabbak-test-123"
+            keytool -genkeypair -keystore "$RUNNER_TEMP/release.jks" -alias sabbak \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$PASS" -keypass "$PASS" -dname "CN=Sabbak"
+          fi
+          echo "KS_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          echo "KS_PASS=$PASS" >> "$GITHUB_ENV"
+          echo "KS_ALIAS=sabbak" >> "$GITHUB_ENV"
+
+      - name: Build release APK
+        run: gradle assembleRelease --no-daemon -PappId="$APP_ID"
+
+      - name: Collect APK
+        run: cp app/build/outputs/apk/release/app-release.apk app.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ inputs.job_id || github.run_id }}
+          path: app.apk
+
+      - name: Publish release (public download link)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_ID: ${{ inputs.job_id || github.run_id }}
+        run: |
+          gh release create "apk-$JOB_ID" app.apk \
+            --title "apk-$JOB_ID" --notes "Built by Sabbak" --repo "$GITHUB_REPOSITORY"
+          echo "Download: https://github.com/$GITHUB_REPOSITORY/releases/download/apk-$JOB_ID/app.apk"
