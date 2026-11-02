@@ -40,6 +40,13 @@ jobs:
         with:
           gradle-version: "8.5"
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Pillow (icon conversion)
+        run: pip install --quiet pillow
+
       - name: Configure app (url, name, icon)
         env:
           APP_URL: ${{ inputs.url }}
