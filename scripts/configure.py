@@ -1,4 +1,4 @@
-import os, re, sys, hashlib, subprocess, struct, zlib, io, urllib.request
+import os, re, sys, hashlib, struct, zlib, io, urllib.request
 from urllib.parse import urlparse
 
 url = os.environ.get("APP_URL", "").strip()
@@ -31,9 +31,10 @@ print("appId:", app_id)
 dest = "app/src/main/res/mipmap-xxxhdpi/ic_launcher.png"
 os.makedirs(os.path.dirname(dest), exist_ok=True)
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
+SIZE = 192
 
 
-def solid_png(path, size=192, rgb=(124, 58, 237)):
+def solid_png(path, size=SIZE, rgb=(124, 58, 237)):
     def chunk(t, d):
         c = struct.pack(">I", len(d)) + t + d
         return c + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
@@ -46,38 +47,41 @@ def solid_png(path, size=192, rgb=(124, 58, 237)):
         f.write(png)
 
 
-def load_pillow():
+def fetch_icon(u):
+    req = urllib.request.Request(u, headers={"User-Agent": "Mozilla/5.0"})
+    return urllib.request.urlopen(req, timeout=20).read(5_000_000)
+
+
+def try_pillow():
     try:
         from PIL import Image
         return Image
     except ImportError:
-        subprocess.run([sys.executable, "-m", "pip", "install", "--quiet",
-                        "--break-system-packages", "pillow"], check=True)
-        from PIL import Image
-        return Image
-
-
-def fetch_icon(u):
-    req = urllib.request.Request(u, headers={"User-Agent": "Mozilla/5.0"})
-    return urllib.request.urlopen(req, timeout=20).read(5_000_000)
+        return None
 
 
 ok = False
 if icon_url.startswith(("http://", "https://")):
     try:
         data = fetch_icon(icon_url)
-        if data.startswith(PNG_SIG):
-            # PNG: use as-is, no extra tools needed
+        head = data[:200].lstrip().lower()
+        if head.startswith(b"<svg") or (head.startswith(b"<?xml") and b"<svg" in data[:2000].lower()):
+            raise ValueError("SVG is not supported, use a PNG link")
+        if head.startswith(b"<!doctype html") or head.startswith(b"<html"):
+            raise ValueError("The link returned a web page, not an image")
+        Image = try_pillow()
+        if Image is not None:
+            # Any format (PNG, JPG, WebP, ICO, GIF): normalise to a 192x192 PNG
+            img = Image.open(io.BytesIO(data)).convert("RGBA")
+            img.thumbnail((SIZE, SIZE))
+            canvas = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
+            canvas.paste(img, ((SIZE - img.width) // 2, (SIZE - img.height) // 2))
+            canvas.save(dest, "PNG")
+        elif data.startswith(PNG_SIG):
             with open(dest, "wb") as f:
                 f.write(data)
         else:
-            # JPG / WebP / etc: convert to PNG with Pillow
-            Image = load_pillow()
-            img = Image.open(io.BytesIO(data)).convert("RGBA")
-            img.thumbnail((192, 192))
-            canvas = Image.new("RGBA", (192, 192), (0, 0, 0, 0))
-            canvas.paste(img, ((192 - img.width) // 2, (192 - img.height) // 2))
-            canvas.save(dest, "PNG")
+            raise ValueError("Not a PNG and Pillow is not installed")
         ok = True
         print("Icon OK")
     except Exception as e:
